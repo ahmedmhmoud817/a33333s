@@ -17,12 +17,6 @@ bot = telebot.TeleBot(TOKEN)
 REPLIES_FILE = "replies.json"
 ADMINS_FILE = "admins.json"
 
-BOT_INFO = None
-try:
-    BOT_INFO = bot.get_me()
-except Exception:
-    BOT_INFO = None
-
 # 50 مكان للعبة الجسوس (أثري وعادي) مع تلميح عام للجاسوس
 LOCATIONS = [
     {"name": "الأهرامات وأبو الهول", "type": "أثري", "hint": "مكان سياحي مفتوح وفيه تاريخ قديم جداً"},
@@ -237,13 +231,6 @@ def _normalize_ar(text):
     return " ".join(t.split())
 
 
-def get_bot_dm_link():
-    uname = (BOT_INFO.username if BOT_INFO and BOT_INFO.username else "").strip()
-    if uname:
-        return f"https://t.me/{uname}?start=spy"
-    return None
-
-
 def is_chat_admin(chat_id, user_id):
     try:
         member = bot.get_chat_member(chat_id, user_id)
@@ -305,6 +292,12 @@ def clear_user_states(user_id):
     deleting_reply_state.discard(user_id)
 
 
+# --- ربط ملف تشغيل يوتيوب والكول ---
+from vc_player import setup_youtube_call_player
+yt_player = setup_youtube_call_player(bot)
+# ----------------------------------
+
+
 # ================= /start & قائمة الأوامر =================
 @bot.message_handler(commands=["start", "help"])
 @bot.message_handler(func=lambda m: m.text and m.text.strip() in ["الاوامر", "الأوامر", "المساعدة"])
@@ -330,7 +323,9 @@ def send_help_menu(message):
         "• <code>الجسوس</code> — فتح غرفة لعب + تلميح الجاسوس + رادار الشبهات والتصويت\n"
         "• <code>انهاء الجسوس</code> — إنهاء جولة عالقة في الجروب\n\n"
         "🚨 <b>نداء المشرفين:</b>\n"
-        "• <code>نداء مشرف</code> — اختيار مشرف ومنشنته بعبارات مضحكة"
+        "• <code>نداء مشرف</code> — اختيار مشرف ومنشنته بعبارات مضحكة\n\n"
+        "📺 <b>بحث وتشغيل يوتيوب في الكول:</b>\n"
+        "• <code>يوتيوب</code> أو <code>شغل</code> — فتح شريط بحث ونتائج بزر تشغيل"
     )
     bot.send_message(message.chat.id, text, parse_mode="HTML")
 
@@ -680,9 +675,9 @@ def build_lobby_markup(chat_id):
         types.InlineKeyboardButton("🚪 خروج", callback_data=f"spy_leave:{chat_id}")
     )
     markup.add(types.InlineKeyboardButton("🚀 ابدأ اللعبة (3 لاعبين فأكثر)", callback_data=f"spy_start:{chat_id}"))
-    dm_link = get_bot_dm_link()
-    if dm_link:
-        markup.add(types.InlineKeyboardButton("📩 افتح الخاص للبوت (مهم)", url=dm_link))
+    uname = (bot.get_me().username or "").strip() if hasattr(bot, "get_me") else ""
+    if uname:
+        markup.add(types.InlineKeyboardButton("📩 افتح الخاص للبوت (مهم)", url=f"https://t.me/{uname}?start=spy"))
     return markup
 
 
@@ -861,7 +856,6 @@ def spy_start_callback(call):
 
     location = random.choice(LOCATIONS)
 
-    # نختبر مين يقدر يستقبل رسالة خاصة من البوت عشان نبدأ فوراً بدون تعليق
     reachable_players = {}
     unreachable_names = []
     for pid, pname in all_players.items():
@@ -872,8 +866,8 @@ def spy_start_callback(call):
             unreachable_names.append(pname)
 
     if len(reachable_players) < 3:
-        dm_link = get_bot_dm_link()
-        extra = f"\nافتح الخاص من هنا: {dm_link}" if dm_link else "\nابعت للبوت /start في الخاص الأول."
+        uname = (bot.get_me().username or "").strip() if hasattr(bot, "get_me") else ""
+        extra = f"\nافتح الخاص من هنا: https://t.me/{uname}?start=spy" if uname else "\nابعت للبوت /start في الخاص الأول."
         names_str = "، ".join([escape_html(x) for x in unreachable_names])
         bot.answer_callback_query(call.id, "لازم 3 لاعبين على الأقل يكونوا فاتحين الخاص للبوت!", show_alert=True)
         bot.send_message(
@@ -931,7 +925,7 @@ def spy_start_callback(call):
 
     notice = ""
     if unreachable_names:
-        notice = f"\n⚠️ <i>ملاحظة: تم بدء الجولة باللاعبين الجاهزين (واللي مقفلين الخاص يضغطوا Start للجولات الجاية).</i>"
+        notice = "\n⚠️ <i>ملاحظة: تم بدء الجولة باللاعبين الجاهزين (واللي مقفلين الخاص يضغطوا Start للجولات الجاية).</i>"
 
     sent_msg = bot.send_message(
         chat_id,
@@ -1051,7 +1045,16 @@ def finish_spy_game(chat_id):
 
 
 # ================= 4. الرد التلقائي على الكلمات (بدون ريبلاي + داخل الجملة) =================
-@bot.message_handler(func=lambda m: True, content_types=["text"])
+@bot.message_handler(
+    func=lambda m: not (
+        m.from_user and (
+            m.from_user.id in adding_reply_state
+            or m.from_user.id in deleting_reply_state
+            or (yt_player and m.from_user.id in yt_player.search_waiting)
+        )
+    ),
+    content_types=["text"]
+)
 def handle_auto_replies(message):
     if message.from_user and not message.from_user.is_bot:
         register_group_admin(message.chat.id, message.from_user)
